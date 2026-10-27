@@ -66,12 +66,24 @@ BCSH = DoseCriteria(
     note="Minimum 25 Gy and maximum 50 Gy.",
 )
 
+JAPAN = DoseCriteria(
+    name="Japan Guideline VI (2024)",
+    dmin_gy=15.0,
+    dmax_gy=50.0,
+    note=(
+        "Every part of the bag receives 15 Gy to 50 Gy. "
+        "The centre is not required to be 25 Gy."
+    ),
+)
+
 PRESETS: dict[str, DoseCriteria] = {
     "fda": FDA_AABB,
     "fda-aabb": FDA_AABB,
     "portaria158": PORTARIA_158,
     "portaria": PORTARIA_158,
     "bcsh": BCSH,
+    "japan": JAPAN,
+    "jrc": JAPAN,
 }
 
 

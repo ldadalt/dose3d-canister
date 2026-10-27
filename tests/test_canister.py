@@ -7,8 +7,9 @@ from datetime import date
 import numpy as np
 import pytest
 
+from dose3d_canister.axisymmetric import expand_axisymmetric
 from dose3d_canister.cli import main
-from dose3d_canister.criteria import FDA_AABB, PORTARIA_158, get_preset
+from dose3d_canister.criteria import BCSH, FDA_AABB, JAPAN, PORTARIA_158, get_preset
 from dose3d_canister.decay import (
     CS137_HALF_LIFE_DAYS,
     activity_ratio,
@@ -21,6 +22,58 @@ from dose3d_canister.interpolate import reconstruct
 from dose3d_canister.io import DosePoints, read_points, write_points
 from dose3d_canister.metrics import summarise
 from dose3d_canister.synthetic import generate, synthetic_dose_gy
+
+
+@pytest.mark.parametrize(
+    ("filename", "n_points", "dmin", "dmax", "japan_passes"),
+    [
+        ("tld_grid_20x20.csv", 400, 20.0, 36.0, True),
+        ("tld_grid_b_20x20.csv", 400, 21.0, 36.0, True),
+        ("tld_grid_c_20x20.csv", 400, 16.0, 43.0, True),
+        ("tld_grid_d_20x20.csv", 400, 14.0, 37.0, False),
+        ("tld_grid_e_21x20.csv", 420, 20.0, 36.0, True),
+    ],
+)
+def test_tld_grid_example_reconstructs_when_expanded(
+    filename: str, n_points: int, dmin: float, dmax: float, japan_passes: bool
+) -> None:
+    from pathlib import Path
+
+    csv_path = Path(__file__).resolve().parents[1] / "examples" / filename
+    points = read_points(csv_path)
+    assert len(points) == n_points
+    assert points.dose_gy.min() == dmin
+    assert points.dose_gy.max() == dmax
+    with pytest.raises(ValueError, match="coplanar"):
+        reconstruct(points, GAMMACELL_3000_ELAN, spacing_mm=8.0)
+    expanded = expand_axisymmetric(points, n_angles=6)
+    volume = reconstruct(expanded, GAMMACELL_3000_ELAN, spacing_mm=8.0)
+    japan = summarise(expanded, volume, GAMMACELL_3000_ELAN, JAPAN)
+    europe = summarise(expanded, volume, GAMMACELL_3000_ELAN, BCSH)
+    assert japan.passed is japan_passes
+    assert not europe.passed
+    assert japan.measured_dmin_gy == dmin
+    assert japan.measured_dmax_gy == dmax
+
+
+def test_tld_grid_d_is_left_right_symmetric() -> None:
+    from pathlib import Path
+
+    full = np.loadtxt(
+        Path(__file__).resolve().parents[1] / "examples" / "tld_grid_d_20x20_matrix.csv",
+        delimiter=",",
+    )
+    assert full.shape == (20, 20)
+    assert np.array_equal(full[:, :10], full[:, 10:][:, ::-1])
+
+
+def test_clinical_isodose_levels_use_the_standard_gray_lines() -> None:
+    from dose3d_canister.view import clinical_isodose_levels
+
+    wide = np.array([12.0, 22.0, 33.0, 55.0])
+    assert clinical_isodose_levels(wide) == [15, 20, 25, 30, 35, 40, 45, 50]
+    narrow = np.array([22.0, 28.0, 31.0])
+    assert clinical_isodose_levels(narrow) == [25.0, 30.0]
 
 
 def test_canister_volume_matches_the_brochure() -> None:
@@ -65,6 +118,28 @@ def test_low_centre_fails_only_the_central_requirement() -> None:
     assert metrics.measured_dmin_gy > 15.0
     assert metrics.measured_central_gy == pytest.approx(20.0)
     assert not metrics.passed
+
+
+def test_low_centre_passes_japan_and_fails_the_american_centre() -> None:
+    points = generate(relative_uncertainty=0.0, defect="low_center")
+    volume = reconstruct(points, GAMMACELL_3000_ELAN, spacing_mm=4.0)
+    japan = summarise(points, volume, GAMMACELL_3000_ELAN, JAPAN)
+    america = summarise(points, volume, GAMMACELL_3000_ELAN, FDA_AABB)
+    assert get_preset("japan") is JAPAN
+    assert get_preset("jrc") is JAPAN
+    assert japan.passed
+    assert not america.passed
+    assert "central" not in {check.name for check in japan.checks}
+
+
+def test_japan_rejects_a_dose_outside_15_to_50_gy() -> None:
+    cold = generate(relative_uncertainty=0.0, defect="cold_spot")
+    cold_volume = reconstruct(cold, GAMMACELL_3000_ELAN, spacing_mm=8.0)
+    assert not summarise(cold, cold_volume, GAMMACELL_3000_ELAN, JAPAN).passed
+
+    hot = replace(generate(relative_uncertainty=0.0), dose_gy=generate().dose_gy * 3.0, uncertainty_gy=None)
+    hot_volume = reconstruct(hot, GAMMACELL_3000_ELAN, spacing_mm=8.0)
+    assert not summarise(hot, hot_volume, GAMMACELL_3000_ELAN, JAPAN).passed
 
 
 def test_scaled_field_fails_the_portaria_maximum() -> None:
@@ -132,7 +207,9 @@ def test_cli_writes_report_and_returns_failure_for_a_cold_spot(tmp_path) -> None
     payload = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
     assert payload["passed"] is True
     assert (out / "report.pdf").stat().st_size > 0
-    assert "plotly" in (out / "dose3d.html").read_text(encoding="utf-8").lower()
+    html = (out / "dose3d.html").read_text(encoding="utf-8")
+    assert "plotly" in html.lower()
+    assert "Isodose" in html and "3D" in html
     assert (out / "slices.png").stat().st_size > 0
 
     cold = tmp_path / "cold.csv"

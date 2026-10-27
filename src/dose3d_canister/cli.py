@@ -7,6 +7,7 @@ import json
 from datetime import date
 from pathlib import Path
 
+from dose3d_canister.axisymmetric import expand_axisymmetric
 from dose3d_canister.criteria import get_preset
 from dose3d_canister.decay import corrected_time_between
 from dose3d_canister.geometry import GAMMACELL_3000_ELAN
@@ -37,6 +38,17 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--output", "-o", type=Path, required=True)
     run.add_argument("--criteria", default="fda-aabb")
     run.add_argument("--spacing-mm", type=float, default=2.0)
+    run.add_argument(
+        "--axisymmetric",
+        action="store_true",
+        help="Copy a diametral plane around the canister axis before reconstructing.",
+    )
+    run.add_argument(
+        "--angles",
+        type=int,
+        default=16,
+        help="Azimuth copies when --axisymmetric is set (more angles → smoother 3D shells).",
+    )
     run.add_argument("--history", type=Path)
     run.add_argument("--date", type=date.fromisoformat)
     run.add_argument("--irradiation-time-s", type=float)
@@ -62,6 +74,8 @@ def _synthetic(args: argparse.Namespace) -> int:
 
 def _run(args: argparse.Namespace) -> int:
     points = read_points(args.csv)
+    if args.axisymmetric:
+        points = expand_axisymmetric(points, n_angles=args.angles)
     try:
         criteria = get_preset(args.criteria)
     except KeyError as exc:
@@ -71,7 +85,12 @@ def _run(args: argparse.Namespace) -> int:
     out = args.output
     out.mkdir(parents=True, exist_ok=True)
     (out / "metrics.json").write_text(json.dumps(metrics.to_dict(), indent=2), encoding="utf-8")
-    write_html(volume, out / "dose3d.html", f"{GAMMACELL_3000_ELAN.name} — {criteria.name}")
+    write_html(
+        volume,
+        out / "dose3d.html",
+        f"{GAMMACELL_3000_ELAN.name} — {criteria.name}",
+        criteria=criteria,
+    )
     save_slice_png(volume, out / "slices.png")
     write_pdf(out / "report.pdf", GAMMACELL_3000_ELAN, criteria, volume, metrics)
     if args.history is not None:
